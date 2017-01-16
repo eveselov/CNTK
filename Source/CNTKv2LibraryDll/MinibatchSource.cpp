@@ -73,7 +73,7 @@ namespace CNTK
     CompositeMinibatchSource::CompositeMinibatchSource(const Dictionary& configuration)
         : m_epochEndReached(false),
           m_prevMinibatchSize(0),
-          m_epochSize(MinibatchSource::InfinitelyRepeat),
+          m_maxNumSamplesToRead(MinibatchSource::InfinitelyRepeat),
           m_randomizedWindow(MinibatchSource::DefaultRandomizationWindow),
           m_truncationLength(0),
           m_numWorkers(1),
@@ -134,13 +134,7 @@ namespace CNTK
 
         const wchar_t* epochSizeConfigurationKey = L"epochSize";
         if (augmentedConfiguration.Contains(epochSizeConfigurationKey))
-            m_epochSize = augmentedConfiguration[epochSizeConfigurationKey].Value<size_t>();
-
-        if (m_epochSize == MinibatchSource::FullDataSweep)
-            m_epochSize = Microsoft::MSR::CNTK::requestDataSize;
-        // Setting big value, but not the max in order to aviod bit overflow.
-        else if (m_epochSize == MinibatchSource::InfinitelyRepeat)
-            m_epochSize = std::numeric_limits<size_t>::max() / 2;
+            m_maxNumSamplesToRead = augmentedConfiguration[epochSizeConfigurationKey].Value<size_t>();
 
         const wchar_t* randomizedWindowConfigurationKey = L"randomizationWindow";
         if (augmentedConfiguration.Contains(randomizedWindowConfigurationKey))
@@ -232,9 +226,24 @@ namespace CNTK
                 epochConfig.m_workerRank = m_distributed ? m_workerRank : 0;
                 epochConfig.m_minibatchSizeInSamples = minibatchSizeInSamples;
                 epochConfig.m_truncationSize = m_truncationLength;
+                epochConfig.m_allowMinibatchesToCrossSweepBoundaries = true;
 
-                epochConfig.m_totalEpochSizeInSamples = m_epochSize;
+                if (m_maxNumSamplesToRead == MinibatchSource::FullDataSweep)
+                {
+                    epochConfig.m_totalEpochSizeInSamples = Microsoft::MSR::CNTK::requestDataSize;
+                }
+                else if (m_maxNumSamplesToRead == MinibatchSource::InfinitelyRepeat)
+                {
+                    // Setting big value, but not the max in order to aviod bit overflow.
+                    epochConfig.m_totalEpochSizeInSamples = std::numeric_limits<size_t>::max() / 2;
+                }
+                else 
+                {
+                    epochConfig.m_totalEpochSizeInSamples = m_maxNumSamplesToRead;
+                }
+
                 epochConfig.m_epochIndex = 0;
+
                 m_matrices.clear();
 
                 std::unordered_set<InputStreamDescription> inputs;
@@ -276,6 +285,7 @@ namespace CNTK
                 newConfig.m_workerRank = m_distributed ? m_workerRank : 0;
                 newConfig.m_minibatchSizeInSamples = minibatchSizeInSamples;
                 newConfig.m_truncationSize = m_truncationLength;
+                newConfig.m_allowMinibatchesToCrossSweepBoundaries = true;
 
                 m_shim->SetConfiguration(newConfig, inputDescriptions);
 
@@ -284,8 +294,11 @@ namespace CNTK
 
             auto hasData = m_shim->GetMinibatch(m_matrices);
             m_epochEndReached = m_shim->IsEndOfEpoch();
+
             if (m_epochEndReached && !hasData)
                 return m_minibatchData;
+
+            bool hasReachedSweepEnd = m_shim->IsEndOfSweep();
 
             for (const auto& s: m_streamInfos)
             {
@@ -310,7 +323,7 @@ namespace CNTK
                     size_t numSamples = input.pMBLayout->GetActualNumSamples();
                     size_t numSequences = input.pMBLayout->GetNumSequences();
 
-                    m_minibatchData[currentStreamInfo] = { numSequences, numSamples, minibatchValuePtr };
+                    m_minibatchData[currentStreamInfo] = { minibatchValuePtr, numSequences, numSamples, hasReachedSweepEnd };
                 }
                 else
                     LogicError("Input data of type other than DataType::Float is currently unsupported by the CNTK built-in composite MinibatchSource!");

@@ -54,7 +54,7 @@ namespace CNTK
         size_t m_workerRank;
         size_t m_distributedAfterSampleCount;
         size_t m_prevMinibatchSize;
-        size_t m_epochSize;
+        size_t m_maxNumSamplesToRead;
         size_t m_randomizedWindow;
         size_t m_truncationLength;
         std::unordered_map<StreamInformation, MinibatchData> m_minibatchData;

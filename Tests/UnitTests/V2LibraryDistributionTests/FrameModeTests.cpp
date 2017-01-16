@@ -60,9 +60,9 @@ namespace
         {
             auto minibatchData = minibatchSource->GetNextMinibatch(minibatchSize, device);
             if (minibatchData.empty())
-                updated = trainer.TrainMinibatch({}, device);
+                updated = trainer.TrainMinibatch(std::unordered_map<Variable, MinibatchData>{}, device);
             else
-                updated = trainer.TrainMinibatch({ { classifier.features, minibatchData[featureStreamInfo].m_data }, { classifier.labels, minibatchData[labelStreamInfo].m_data } }, device);
+                updated = trainer.TrainMinibatch({ { classifier.features, minibatchData[featureStreamInfo] }, { classifier.labels, minibatchData[labelStreamInfo] } }, device);
 
             size_t checkpointIndex = trainer.TotalNumberOfSamplesSeen() / checkpointFrequency;
             if (checkpointIndex > currentCheckpointIndex)
