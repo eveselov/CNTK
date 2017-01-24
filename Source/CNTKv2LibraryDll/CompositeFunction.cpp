@@ -38,7 +38,8 @@ namespace CNTK
         dict[versionKey] = CurrentVersion();
         dict[typeKey] = s_compositeFunctionTypeValue;
         dict[rootKey] = RootFunction()->Uid();
-        dict[nameKey] = Name();
+        if (!Name().empty())
+            dict[nameKey] = Name();
         dict[uidKey] = Uid();
 
         return dict;
@@ -159,11 +160,13 @@ namespace CNTK
                                                                         const std::unordered_map<Variable, Variable>& allPlaceholderReplacements,
                                                                         const CNTK::DeviceDescriptor& device)
     {
-        static const vector<std::wstring> s_requiredDictionaryKeys = { typeKey, rootKey, nameKey, uidKey };
+        static const vector<std::wstring> s_requiredDictionaryKeys = { typeKey, rootKey, uidKey };
         ValidateDictionary<CompositeFunction>(dict, s_requiredDictionaryKeys, s_compositeFunctionTypeValue, s_serializationVersion);
 
         const auto& rootUid = dict[rootKey].Value<std::wstring>();
-        const auto& name = dict[nameKey].Value<std::wstring>();
+        std::wstring name = L"";
+        if (dict.Contains(nameKey))
+            name = dict[nameKey].Value<std::wstring>();
         const auto& uid = dict[uidKey].Value<std::wstring>();
 
         FunctionPtr root = *std::find_if(allPrimitiveFunctions.begin(), allPrimitiveFunctions.end(), [&rootUid](const FunctionPtr& func) {
@@ -1256,7 +1259,7 @@ namespace CNTK
         if (iter != m_perOutputVarArgumentDependencies.end())
             return iter->second;
 
-        auto wrappedComposite = CompositeFunction::Create(output.Owner());
+        auto wrappedComposite = AsComposite(output.Owner());
         m_perOutputVarArgumentDependencies[output] = wrappedComposite->Arguments();
 
         return m_perOutputVarArgumentDependencies[output];
@@ -1344,7 +1347,7 @@ namespace CNTK
         PopulateNetworkInputs(arguments);
 
         // Dropout nodes have an implicit input in the form of the random mask that is applied to its explicit input
-        // This mask is regerated every minibatch and hence dropout nodes with a non-zero dropout rate must me marked outdated
+        // This mask is regenerated every minibatch and hence dropout nodes with a non-zero dropout rate must me marked outdated
         // w.r.t. inputs to force evaluation in each minibatch
         list<ComputationNodeBasePtr> dropoutNodes = m_computationNetwork->GetNodesWithType(OperationNameOf(DropoutNode));
         for (auto& nodeIter : dropoutNodes)

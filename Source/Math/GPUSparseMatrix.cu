@@ -2012,14 +2012,16 @@ ElemType GPUSparseMatrix<ElemType>::InnerProductOfMatrices(const GPUSparseMatrix
     cusparseAction_t cpVals = CUSPARSE_ACTION_NUMERIC;
     cusparseIndexBase_t idxBase = CUSPARSE_INDEX_BASE_ZERO;
     cusparseHandle_t cusparseHandle = 0;
+    CUSPARSE_CALL(cusparseCreate(&cusparseHandle));
 
-    if (a.GetFormat() == matrixFormatSparseCSR) // need to put a in ColumnMajor format
+    bool allocTemp = (a.GetFormat() == matrixFormatSparseCSR);
+
+    if (allocTemp) // need to put a in ColumnMajor format
     {
         cscValA = TracingGPUMemoryAllocator::Allocate<ElemType>(a.GetComputeDeviceId(), nnz);
         cscRowIndA = TracingGPUMemoryAllocator::Allocate<GPUSPARSE_INDEX_TYPE>(a.GetComputeDeviceId(), nnz);
         cscColPtrA = TracingGPUMemoryAllocator::Allocate<GPUSPARSE_INDEX_TYPE>(a.GetComputeDeviceId(), (n + 1));
 
-        CUSPARSE_CALL(cusparseCreate(&cusparseHandle));
         SyncGuard syncGuard;
         if (sizeof(ElemType) == sizeof(float))
         {
@@ -2049,8 +2051,11 @@ ElemType GPUSparseMatrix<ElemType>::InnerProductOfMatrices(const GPUSparseMatrix
     int blocksPerGrid = (int) ceil(1.0 * M / GridDim::maxThreadsPerBlock);
     SyncGuard syncGuard;
     _getSparseVectorRepresntationForCSCMatrix<ElemType><<<blocksPerGrid, GridDim::maxThreadsPerBlock>>>(cscColPtrA, cscRowIndA, vectArray, M, N);
-    TracingGPUMemoryAllocator::Free<GPUSPARSE_INDEX_TYPE>(a.GetComputeDeviceId(), cscRowIndA);
-    TracingGPUMemoryAllocator::Free<GPUSPARSE_INDEX_TYPE>(a.GetComputeDeviceId(), cscColPtrA);
+    if (allocTemp)
+    {
+        TracingGPUMemoryAllocator::Free<GPUSPARSE_INDEX_TYPE>(a.GetComputeDeviceId(), cscRowIndA);
+        TracingGPUMemoryAllocator::Free<GPUSPARSE_INDEX_TYPE>(a.GetComputeDeviceId(), cscColPtrA);
+    }
     // CUDA_CALL(cudaMemcpy(h_vectArray,vectArray,sizeof(GPUSPARSE_INDEX_TYPE)*a.m_nz,cudaMemcpyDeviceToHost));
 
     // Actual dot product
@@ -2068,7 +2073,10 @@ ElemType GPUSparseMatrix<ElemType>::InnerProductOfMatrices(const GPUSparseMatrix
                                     reinterpret_cast<double*>(&res), idxBase));
     }
     TracingGPUMemoryAllocator::Free<GPUSPARSE_INDEX_TYPE>(a.GetComputeDeviceId(), vectArray);
-    TracingGPUMemoryAllocator::Free<ElemType>(a.GetComputeDeviceId(), cscValA);
+    if (allocTemp)
+    {
+        TracingGPUMemoryAllocator::Free<ElemType>(a.GetComputeDeviceId(), cscValA);
+    }
     CUSPARSE_CALL(cusparseDestroy(cusparseHandle));
     return res;
 }
@@ -2077,6 +2085,55 @@ template <class ElemType>
 ElemType GPUSparseMatrix<ElemType>::InnerProductOfMatrices(const GPUMatrix<ElemType>& a, const GPUSparseMatrix<ElemType>& b)
 {
     return GPUSparseMatrix<ElemType>::InnerProductOfMatrices(b, a);
+}
+
+template <class ElemType>
+void GPUSparseMatrix<ElemType>::InnerProduct(const GPUSparseMatrix<ElemType>& a, const GPUMatrix<ElemType>& b, GPUMatrix<ElemType>& c, const bool isColWise)
+{
+    if (a.GetComputeDeviceId() != b.GetComputeDeviceId() || b.GetComputeDeviceId() != c.GetComputeDeviceId()) // different GPUs
+        InvalidArgument("All matrices must be on the same GPU");
+
+    if (a.IsEmpty() || b.IsEmpty())
+        LogicError("Scale:  one of the input matrices is empty.");
+
+    if (a.GetFormat() != MatrixFormat::matrixFormatSparseCSC)
+    {
+        NOT_IMPLEMENTED;
+    }
+
+    const int m = (int)a.GetNumRows();
+    const int n = (int)a.GetNumCols();
+    const int k = (int)b.GetNumRows();
+    const int l = (int)b.GetNumCols();
+
+    assert(m > 0 && n > 0 && k > 0 && l > 0); // converting from size_t to int may cause overflow
+    assert(m == k && n == l);                 // converting from size_t to int may cause overflow
+    if (m != k || n != l)
+        InvalidArgument("Matrices a and b should have same dimension.");
+
+    if (isColWise)
+        c.RequireSize(1, n);
+    else
+        c.RequireSize(m, 1);
+
+    c.PrepareDevice();
+
+    int blocksPerGrid = 0;
+    if (isColWise) // col-wise
+    {
+        blocksPerGrid = (int)ceil(1.0 * n / GridDim::maxThreadsPerBlock);
+    }
+    else
+    {
+        blocksPerGrid = (int)ceil(1.0 * m / GridDim::maxThreadsPerBlock);
+    }
+
+    SyncGuard syncGuard;
+    _innerProduct4SparseCSC<ElemType><<<blocksPerGrid, GridDim::maxThreadsPerBlock, 0, t_stream>>>(
+        c.Data(),
+        a.Data(), a.RowLocation(), a.ColLocation(),
+        b.Data(),
+        m, n, isColWise);
 }
 
 // This is an utility function useful for debugging issues with sparse matrices.
